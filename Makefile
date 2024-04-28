@@ -134,6 +134,7 @@ UPROGS=\
 	$U/_wc\
 	$U/_zombie\
 	$U/_ummalloc_test\
+	$U/_shmtest\
 
 TRACES=\
 	$T/amptjp-bal.rep\

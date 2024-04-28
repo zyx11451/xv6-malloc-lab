@@ -91,6 +91,8 @@ struct proc {
   int killed;                  // If non-zero, have been killed
   int xstate;                  // Exit status to be returned to parent's wait
   int pid;                     // Process ID
+  int count_shm_pages;         // Prevent growproc when not 0
+  int shm_id;
 
   // wait_lock must be held when using this:
   struct proc *parent;         // Parent process
@@ -104,4 +106,15 @@ struct proc {
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
+};
+
+enum procpermission{NONE,READWRITE};
+
+struct shm_page{
+  struct spinlock lock;
+  int shm_id;//shmID
+  int used;
+  int count_bound;
+  uint64 pa;
+  enum procpermission permission[NPROC];
 };

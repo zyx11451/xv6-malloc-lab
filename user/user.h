@@ -23,6 +23,12 @@ char* sbrk(int);
 int sleep(int);
 int uptime(void);
 uint64 getclk(void);
+int allocshm(void);
+int freeshm(int);
+uint64 bindshm(int);
+int unbindshm(void);
+int chshm(int,int);
+int shmpm(int);
 
 // ulib.c
 int stat(const char*, struct stat*);

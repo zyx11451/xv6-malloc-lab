@@ -95,3 +95,52 @@ sys_getclk(void)
 {
   return *(uint64*) CLINT_MTIME;
 }
+
+uint64
+sys_allocshm(void)
+{
+  return allocshm();
+}
+
+uint64
+sys_freeshm(void)
+{
+  int shm_id;
+
+  argint(0,&shm_id);
+  return freeshm(shm_id);
+}
+
+uint64
+sys_bindshm(void)
+{
+  int shm_id;
+
+  argint(0,&shm_id);
+  return bindshm(shm_id);
+}
+
+uint64
+sys_unbindshm(void)
+{
+  return unbindshm();
+}
+
+uint64
+sys_chshm(void)
+{
+  int shm_id,permission;
+
+  argint(0,&shm_id);
+  argint(1,&permission);
+  return chshm(shm_id,permission);
+}
+
+uint64
+sys_shmpm(void)
+{
+  int shm_id;
+
+  argint(0,&shm_id);
+  return shmpm(shm_id);
+}

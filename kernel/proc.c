@@ -12,8 +12,13 @@ struct proc proc[NPROC];
 
 struct proc *initproc;
 
+struct shm_page shm_page[NSHMPAGE];
+
 int nextpid = 1;
 struct spinlock pid_lock;
+
+int next_shm_id = 1;
+struct spinlock shm_id_lock;
 
 extern void forkret(void);
 static void freeproc(struct proc *p);
@@ -58,6 +63,17 @@ procinit(void)
   }
 }
 
+void
+shminit(void)
+{
+  struct shm_page *shp;
+
+  initlock(&shm_id_lock,"next_shm_id");
+  for(shp = shm_page; shp < &shm_page[NSHMPAGE]; shp++){
+    shp->used = 0;
+    initlock(&shp->lock,"shp");
+  } 
+}
 // Must be called with interrupts disabled,
 // to prevent race with process being moved
 // to a different CPU.
@@ -102,6 +118,16 @@ allocpid()
   return pid;
 }
 
+int
+alloc_shm_id()
+{
+  int shm_id;
+  acquire(&shm_id_lock);
+  shm_id = next_shm_id;
+  next_shm_id = next_shm_id + 1;
+  release(&shm_id_lock);
+  return shm_id;
+}
 // Look in the process table for an UNUSED proc.
 // If found, initialize state required to run in the kernel,
 // and return with p->lock held.
@@ -124,7 +150,7 @@ allocproc(void)
 found:
   p->pid = allocpid();
   p->state = USED;
-
+  p->count_shm_pages = 0;
   // Allocate a trapframe page.
   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
     freeproc(p);
@@ -169,6 +195,10 @@ freeproc(struct proc *p)
   p->killed = 0;
   p->xstate = 0;
   p->state = UNUSED;
+  int n = p-proc;
+  for(int i = 0;i<NSHMPAGE;++i){
+    shm_page[i].permission[n] = NONE;
+  }
 }
 
 // Create a user page table for a given process, with no user memory,
@@ -263,6 +293,7 @@ growproc(int n)
   struct proc *p = myproc();
 
   sz = p->sz;
+  if(p->count_shm_pages != 0) return -1;
   if(n > 0){
     if((sz = uvmalloc(p->pagetable, sz, sz + n, PTE_W)) == 0) {
       return -1;
@@ -681,3 +712,157 @@ procdump(void)
     printf("\n");
   }
 }
+
+
+// create a new shared page and return shmid.If failed,return -1;
+int allocshm()
+{
+  struct shm_page* shp;
+  for(shp = shm_page;shp<&shm_page[NSHMPAGE];++shp){
+    acquire(&shp->lock);
+    if(shp->used == 0) break; 
+    release(&shp->lock);
+  }
+  if(shp == &shm_page[NSHMPAGE]){
+    release(&shp->lock);
+    return 0;
+  }
+  shp->pa = (uint64)kalloc();
+  memset((void *)shp->pa,0,PGSIZE);
+  shp->shm_id = alloc_shm_id();
+  shp->used = 1;
+  shp->count_bound = 0;
+  for(int i=0;i<NPROC;++i){
+    shp->permission[i] = NONE;
+  }
+  release(&shp->lock);
+  return shp->shm_id;
+}
+
+//return 0. If page is still bound by some procs,return -1.
+int freeshm(int shm_id){
+  struct shm_page* shp;
+  for(shp = shm_page;shp<&shm_page[NSHMPAGE];++shp){
+    acquire(&shp->lock);
+    if(shp->shm_id == shm_id) break; 
+    release(&shp->lock);
+  }
+  if(shp == &shm_page[NSHMPAGE]){
+    release(&shp->lock);
+    return -1;
+  }
+  if(shp->used == 0){
+    release(&shp->lock);
+    return -1;
+  }
+  if(shp->count_bound != 0){
+    release(&shp->lock);
+    return -1;
+  }
+  shp->used = 0;
+  kfree((void*)shp->pa);
+  release(&shp->lock);
+  return 0;
+}
+
+
+//return 0 if error
+uint64 bindshm(int shm_id){
+  struct shm_page* shp;
+  struct proc* p = myproc();
+  for(shp = shm_page;shp<&shm_page[NSHMPAGE];++shp){
+    acquire(&shp->lock);
+    if(shp->shm_id == shm_id) break; 
+    release(&shp->lock);
+  }
+  if(shp == &shm_page[NSHMPAGE]) {
+    release(&shp->lock);
+    return 0;
+  }
+  if(shp->used == 0){
+    release(&shp->lock);
+    return 0;
+  }
+  if(p->count_shm_pages == 1) {
+    release(&shp->lock);
+    return 0;
+  }// we only allow a proc to have one shmpage at the same time.
+  if(shp->permission[p-proc] == NONE){
+    release(&shp->lock);
+    return 0;
+  }
+  uint64 va = PGROUNDUP(p->sz);
+  if(mappages(p->pagetable, va, PGSIZE, shp->pa, PTE_R | PTE_W | PTE_U) < 0){
+    release(&shp->lock);
+    return 0;
+  }
+  shp->count_bound += 1;
+  p->sz += PGSIZE;
+  p->count_shm_pages = 1;
+  p->shm_id = shm_id;
+  release(&shp->lock);
+  return va;
+}
+
+int unbindshm(){
+  struct proc* p = myproc();
+  int shm_id = p->shm_id;
+  struct shm_page* shp;
+  for(shp = shm_page;shp<&shm_page[NSHMPAGE];++shp){
+    acquire(&shp->lock);
+    if(shp->shm_id == shm_id) break; 
+    release(&shp->lock);
+  }
+  if(shp == &shm_page[NSHMPAGE]){
+    release(&shp->lock);
+    return -1;
+  }
+  p->count_shm_pages = 0;
+  shp->count_bound --;
+  release(&shp->lock);
+  return 0;
+}
+
+int chshm(int shm_id,int k){
+  struct proc* p = myproc();
+  struct shm_page* shp;
+  for(shp = shm_page;shp<&shm_page[NSHMPAGE];++shp){
+    acquire(&shp->lock);
+    if(shp->shm_id == shm_id) break; 
+    release(&shp->lock);
+  }
+  if(shp == &shm_page[NSHMPAGE]){
+    release(&shp->lock);
+    return -1;
+  }
+  if(shp->used == 0){
+    release(&shp->lock);
+    return -1;
+  }
+  if(k==0) shp->permission[p-proc] = NONE;
+  else shp->permission[p-proc] = READWRITE;
+  release(&shp->lock);
+  return 0;
+
+
+}  
+
+int shmpm(int shm_id){
+  struct shm_page* shp;
+  for(shp = shm_page;shp<&shm_page[NSHMPAGE];++shp){
+    acquire(&shp->lock);
+    if(shp->shm_id == shm_id) break; 
+    release(&shp->lock);
+  }
+  if(shp == &shm_page[NSHMPAGE]){
+    release(&shp->lock);
+    return -1;
+  }
+  if(shp->used == 0){
+    release(&shp->lock);
+    return -1;
+  }
+  int pm = shp->permission[myproc()-proc];
+  release(&shp->lock);
+  return pm;
+  }
